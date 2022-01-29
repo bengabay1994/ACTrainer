@@ -9,5 +9,7 @@ namespace ACTrainer
         public float x { get; set; }
         public float y { get; set; }
         public float z { get; set; }
+
+        public int health { get; set; }
     }
 }

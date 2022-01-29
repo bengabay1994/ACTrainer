@@ -1,15 +1,9 @@
+using Memory;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
 using System.Diagnostics;
-using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Memory;
 
 namespace ACTrainer
 {
@@ -22,6 +16,23 @@ namespace ACTrainer
         private static bool isGameOn = false;
         private static int s_originalRecoilCommandLength = 5;
         private static byte[] s_originalRecoilCommand = null;
+
+        private string addrOfEntityArrayAsString = null;
+        private string AddrOfEntityArrayAsString { get
+            {
+                if (addrOfEntityArrayAsString == null && m_memoryObj != null) 
+                {
+                    byte[] addrOfEntityArray = m_memoryObj.ReadBytes($"base+{c_pointToEntityArrayBaseOffset}", 4);
+                    addrOfEntityArrayAsString = "";
+                    for (int i = 3; i >= 0; --i)
+                    {
+                        addrOfEntityArrayAsString += addrOfEntityArray[i].ToString("X2");
+                    }
+                }
+
+                return addrOfEntityArrayAsString;
+            }
+        }
 
         //=======================================================================
         //  Offsets
@@ -263,6 +274,10 @@ namespace ACTrainer
 
         private void NoRecoil_CheckedChanged(object sender, EventArgs e)
         {
+            if (!isGameOn) 
+            {
+                return;
+            }
             try
             {
                 if (NoRecoil.Checked)
@@ -316,45 +331,76 @@ namespace ACTrainer
 
         private void ActivateAimBot() 
         {
-            while (AimBot.Checked) 
+            int numOfEnemies = 0;
+            if (!isGameOn)
             {
-                int numOfPlayers = m_memoryObj.ReadInt($"base+{c_numberOfEnemiesOffset}");
+                return;
+            }
+            while (AimBot.Checked && isGameOn) 
+            {
+
+                do
+                {
+                    numOfEnemies = m_memoryObj.ReadInt($"base+{c_numberOfEnemiesOffset}") - 1;
+                    if (!AimBot.Checked) 
+                    {
+                        return;
+                    }
+                }while (numOfEnemies < 1);
                 float x = m_memoryObj.ReadFloat($"base+{c_basePlayerOffset},{c_XEastPositiveCordOffset}");
                 float y = m_memoryObj.ReadFloat($"base+{c_basePlayerOffset},{c_YNorthNegativeCordOffset}");
                 float z = m_memoryObj.ReadFloat($"base+{c_basePlayerOffset},{c_ZCordOffset}");
-                List<playerCord> playersCord = initPlayersList(numOfPlayers);
+                List<playerCord> playersCord = initPlayersList(numOfEnemies);
                 var myCord = new playerCord() { x = x, y = y, z = z };
                 // plus 1 since in the entity array the first item is a dummy.
-                int enemyIndex = Utils.GetClosestPlayer(playersCord, myCord);
+                int enemyIndexList = Utils.GetClosestPlayer(playersCord, myCord);
                 // now I need to aim my crosshair on this enemy location.
-                Trace.WriteLine($"closest enemy is in index: {enemyIndex}");
-                Trace.WriteLine($"closest enemy is in Cord: x={playersCord[enemyIndex].x}, y={playersCord[enemyIndex].y}, z={playersCord[enemyIndex].z}");
-                Trace.WriteLine($"My cords our: x={myCord.x}, y={myCord.y}, z={myCord.z}");
-                float MouseX = (float)Math.Acos(Utils.Dist1D(myCord, playersCord[enemyIndex]) / Utils.Dist2D(myCord, playersCord[enemyIndex]));
-                float MouseY = (float)Math.Acos(Utils.Dist2D(myCord, playersCord[enemyIndex]) / Utils.Dist3D(myCord, playersCord[enemyIndex]));
-                Trace.WriteLine($"MouseX angle is: {MouseX}");
-                Trace.WriteLine($"MouseY angle is: {MouseY}");
-                m_memoryObj.WriteMemory($"base+{c_basePlayerOffset},{c_MouseXOffset}", "float", MouseX.ToString());
-                m_memoryObj.WriteMemory($"base+{c_basePlayerOffset},{c_MouseYOffset}", "float", MouseY.ToString());
+                //Trace.WriteLine($"closest enemy is in index: {enemyIndex}");
+                //Trace.WriteLine($"closest enemy is in Cord: x={playersCord[enemyIndex].x}, y={playersCord[enemyIndex].y}, z={playersCord[enemyIndex].z}");
+                //Trace.WriteLine($"My cords our: x={myCord.x}, y={myCord.y}, z={myCord.z}");
+
+                playerCord enemyUpdatedCords = GetEnemyCords(enemyIndexList+1);
+                float MouseX = Utils.ConvertRadiansToFloatDegrees(Math.Asin(Utils.Dist1D(myCord, enemyUpdatedCords) / Utils.Dist2DXY(myCord, enemyUpdatedCords)));
+                MouseX = Utils.AdjustMosueXToCorrectRangeAndLocation(myCord, enemyUpdatedCords, MouseX);
+                float MouseY = Utils.ConvertRadiansToFloatDegrees(Math.Acos(Utils.Dist2DXY(myCord, enemyUpdatedCords) / Utils.Dist3D(myCord, enemyUpdatedCords)));
+                MouseY = Utils.AdjustMosueYToCorrectRangeAndLocation(myCord, enemyUpdatedCords, MouseY);
+                //Trace.WriteLine($"MouseX angle is: {MouseX}");
+                //Trace.WriteLine($"MouseY angle is: {MouseY}");
+                if (isEnemyAlive(enemyIndexList+1)) 
+                {
+                    m_memoryObj.WriteMemory($"base+{c_basePlayerOffset},{c_MouseXOffset}", "float", MouseX.ToString());
+                    m_memoryObj.WriteMemory($"base+{c_basePlayerOffset},{c_MouseYOffset}", "float", MouseY.ToString());
+                }
             }
         }
 
-        private List<playerCord> initPlayersList(int numOfPlayers) 
+        private playerCord GetEnemyCords(int enemyIndex) 
         {
-            byte[] addrOfEntityArray = m_memoryObj.ReadBytes($"base+{c_pointToEntityArrayBaseOffset}", 4);
-            string addrOfEntityArrayAsString = "";
-            for (int i = 3; i >= 0; --i) 
-            {
-                addrOfEntityArrayAsString += addrOfEntityArray[i].ToString("X2");
-            }
+            float x = m_memoryObj.ReadFloat($"{AddrOfEntityArrayAsString}+{(enemyIndex*4).ToString("X")},{c_XEastPositiveCordOffset}");
+            float y = m_memoryObj.ReadFloat($"{AddrOfEntityArrayAsString}+{(enemyIndex*4).ToString("X")},{c_YNorthNegativeCordOffset}");
+            float z = m_memoryObj.ReadFloat($"{AddrOfEntityArrayAsString}+{(enemyIndex*4).ToString("X")},{c_ZCordOffset}");
+            return new playerCord() { x = x, y = y, z = z };
+        }
+
+        private bool isEnemyAlive(int enemyIndex) 
+        {
+            int health = m_memoryObj.ReadInt($"{AddrOfEntityArrayAsString}+{(enemyIndex * 4).ToString("X")},{c_HealthOffset}");
+            Trace.TraceInformation($"Health of enemy is: {health}");
+            return health > 0;
+        }
+
+        private List<playerCord> initPlayersList(int numOfEnemies) 
+        {
             List<playerCord> playersList = new List<playerCord>();
             float x, y, z;
-            for (int i = 0; i < numOfPlayers; ++i) 
+            int hp;
+            for (int i = 0; i < numOfEnemies; ++i) 
             {
-                x = m_memoryObj.ReadFloat($"{addrOfEntityArrayAsString}+{((i + 1) * 4).ToString("X")},{c_XEastPositiveCordOffset}");
-                y = m_memoryObj.ReadFloat($"{addrOfEntityArrayAsString}+{((i + 1) * 4).ToString("X")},{c_YNorthNegativeCordOffset}");
-                z = m_memoryObj.ReadFloat($"{addrOfEntityArrayAsString}+{((i + 1) * 4).ToString("X")},{c_ZCordOffset}");
-                playersList.Add(new playerCord() { x = x, y = y, z = z, });
+                x = m_memoryObj.ReadFloat($"{AddrOfEntityArrayAsString}+{((i + 1) * 4).ToString("X")},{c_XEastPositiveCordOffset}");
+                y = m_memoryObj.ReadFloat($"{AddrOfEntityArrayAsString}+{((i + 1) * 4).ToString("X")},{c_YNorthNegativeCordOffset}");
+                z = m_memoryObj.ReadFloat($"{AddrOfEntityArrayAsString}+{((i + 1) * 4).ToString("X")},{c_ZCordOffset}");
+                hp = m_memoryObj.ReadInt($"{AddrOfEntityArrayAsString}+{((i + 1) * 4).ToString("X")},{c_HealthOffset}");
+                playersList.Add(new playerCord() { x = x, y = y, z = z, health = hp});
             }
 
             return playersList;
